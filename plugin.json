@@ -1,0 +1,12 @@
+{
+  "ID": "c11d8b37-9967-4af3-b134-a22171d0dba8",
+  "ActionKeyword": "up",
+  "Name": "AppUpgrader",
+  "Description": "Allows you to open URLs using keywords set in the settings",
+  "Author": "Exarilo",
+  "Version": "1.0.0",
+  "Language": "csharp",
+  "Website": "https://github.com/Exarilo/Flow.Launcher.Plugin.AppUpgrader",
+  "IcoPath": "Images\\app.png",
+  "ExecuteFileName": "Flow.Launcher.Plugin.AppUpgrader.dll"
+}
