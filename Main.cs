@@ -50,7 +50,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
             Context.API.ShowMsg($"Attempting to update {app.Name}...");
-            await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id}");
+            await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} -i");
             upgradableApps = await GetUpgradableAppsAsync();
         }
 
