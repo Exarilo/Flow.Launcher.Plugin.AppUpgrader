@@ -25,22 +25,20 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         {
             var results = new List<Result>();
             string keyword = query.FirstSearch.Trim().ToLower();
-            if (keyword.Equals("up") || keyword.Equals("upgrade"))
+
+            foreach (var app in upgradableApps.ToList())
             {
-                foreach (var app in upgradableApps.ToList()) 
+                results.Add(new Result
                 {
-                    results.Add(new Result
+                    Title = $"Upgrade {app.Name}",
+                    SubTitle = $"From {app.Version} to {app.AvailableVersion}",
+                    Action = context =>
                     {
-                        Title = $"Upgrade {app.Name}",
-                        SubTitle = $"From {app.Version} to {app.AvailableVersion}",
-                        Action = context =>
-                        {
-                            _ = PerformUpgradeAsync(app);
-                            return true;
-                        },
-                        IcoPath = "Images\\app.png"
-                    });
-                }
+                        PerformUpgradeAsync(app);
+                        return true;
+                    },
+                    IcoPath = "Images\\app.png"
+                });
             }
 
             return results;
