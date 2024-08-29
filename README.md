@@ -12,7 +12,7 @@ The `AppUpgrader` plugin for Flow Launcher helps you keep your applications up t
 ## Usage
 
 1. Open Flow Launcher.
-2. Type `up` or `upgrade` to see the list of upgradable applications.
+2. Type `up` to see the list of upgradable applications.
 3. Select an application and press `Enter` to update it.
 
 ## Requirements
