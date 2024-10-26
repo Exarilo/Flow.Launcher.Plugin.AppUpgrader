@@ -15,16 +15,27 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         internal PluginInitContext Context;
         private List<UpgradableApp> upgradableApps;
 
-        public async Task InitAsync(PluginInitContext context)
+        public Task InitAsync(PluginInitContext context)
         {
             Context = context;
-            upgradableApps = await GetUpgradableAppsAsync();
+            try
+            {
+                upgradableApps = GetUpgradableAppsAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception ex) { }
+            return Task.CompletedTask;
         }
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
         {
+            if (upgradableApps == null || !upgradableApps.Any())
+            {
+                return new List<Result>();
+            }
+
             var results = new List<Result>();
             string keyword = query.FirstSearch.Trim().ToLower();
+
 
             foreach (var app in upgradableApps.ToList())
             {
@@ -34,7 +45,14 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     SubTitle = $"From {app.Version} to {app.AvailableVersion}",
                     Action = context =>
                     {
-                        PerformUpgradeAsync(app);
+                        Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await PerformUpgradeAsync(app);
+                            }
+                            catch (Exception ex){}
+                        }, token);
                         return true;
                     },
                     IcoPath = "Images\\app.png"
