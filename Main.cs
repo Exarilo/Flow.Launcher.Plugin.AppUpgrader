@@ -66,7 +66,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             return true;
                             }
                             catch (Exception ex) { return false;}
-                     
+
                         }
                     }
                 };
