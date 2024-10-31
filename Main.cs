@@ -18,66 +18,35 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         public Task InitAsync(PluginInitContext context)
         {
             Context = context;
-            try
-            {
-                upgradableApps = GetUpgradableAppsAsync().GetAwaiter().GetResult();
-            }
-            catch (Exception ex) { }
             return Task.CompletedTask;
         }
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
         {
-            await Task.Yield();
-
             var results = new List<Result>();
-            string keyword = query.FirstSearch.Trim().ToLower();
-
-            if (upgradableApps == null)
+            try
             {
-                return new List<Result>
-                {
-                    new Result
-                    {
-                        Title = "Update Check Error",
-                        SubTitle = "Unable to check for available updates",
-                        IcoPath = "Images\\app.png"
-                    }
-                };
+                upgradableApps = GetUpgradableAppsAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                return results;
             }
 
-            if (!upgradableApps.Any())
-            {
-                return new List<Result>
-                {
-                    new Result
-                    {
-                        Title = "No Updates Available",
-                        SubTitle = "All your applications are up to date",
-                        IcoPath = "Images\\app.png",
-                        Action = context =>
-                        {
-                            try
-                            {
-                                Task.Run(async () =>
-                            {
-                                upgradableApps = await GetUpgradableAppsAsync();
-                            }, token);
-                            return true;
-                            }
-                            catch (Exception ex) { return false;}
+            await Task.Yield();
+            string keyword = query.FirstSearch.Trim().ToLower();
 
-                        }
-                    }
-                };
+            if (upgradableApps == null || !upgradableApps.Any())
+            {
+                return results;
             }
 
             foreach (var app in upgradableApps.ToList())
             {
                 results.Add(new Result
                 {
-                    Title = $"Update {app.Name}",
-                    SubTitle = $"Version {app.Version} → {app.AvailableVersion}",
+                    Title = $"Upgrade {app.Name}",
+                    SubTitle = $"From {app.Version} to {app.AvailableVersion}",
                     Action = context =>
                     {
                         Task.Run(async () =>
@@ -86,7 +55,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             {
                                 await PerformUpgradeAsync(app);
                             }
-                            catch (Exception ex) { }
+                            catch (Exception ex){}
                         }, token);
                         return true;
                     },
@@ -96,6 +65,8 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             return results;
         }
+
+
 
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
