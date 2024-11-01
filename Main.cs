@@ -19,8 +19,16 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private DateTime _lastRefreshTime = DateTime.MinValue;
         private const int CACHE_EXPIRATION_MINUTES = 15;
         private const int COMMAND_TIMEOUT_SECONDS = 10;
-        private static readonly Regex AppLineRegex = new Regex(@"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
-                                                        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex AppLineRegex = new Regex(
+            @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase,
+            TimeSpan.FromMilliseconds(500) 
+        );
+        private static readonly Regex DashLineRegex = new Regex(
+            @"^-+$",
+            RegexOptions.Compiled,
+            TimeSpan.FromMilliseconds(500) 
+        );
         public Task InitAsync(PluginInitContext context)
         {
             Context = context;
@@ -86,7 +94,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private bool ShouldRefreshCache()
         {
             return upgradableApps == null ||
-                   DateTime.Now - _lastRefreshTime > TimeSpan.FromMinutes(CACHE_EXPIRATION_MINUTES);
+                   DateTime.UtcNow - _lastRefreshTime > TimeSpan.FromMinutes(CACHE_EXPIRATION_MINUTES);
         }
 
         private async Task RefreshUpgradableAppsAsync()
@@ -128,12 +136,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             return ParseWingetOutput(output);
         }
 
-        private List<UpgradableApp> ParseWingetOutput(string output)
+        private static List<UpgradableApp> ParseWingetOutput(string output)
         {
             var upgradableApps = new List<UpgradableApp>();
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-            var startIndex = Array.FindIndex(lines, line => Regex.IsMatch(line, @"^-+$"));
+            var startIndex = Array.FindIndex(lines, line => DashLineRegex.IsMatch(line));
             if (startIndex == -1) return upgradableApps;
 
             for (int i = startIndex + 1; i < lines.Length - 1; i++)
@@ -153,7 +161,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                         Source = match.Groups[5].Value
                     };
 
-                    if (app.Id.Contains(".") || app.Id.Contains("-"))
+                    if (app.Id.Contains('.') || app.Id.Contains('-'))
                     {
                         upgradableApps.Add(app);
                     }
@@ -162,7 +170,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             return upgradableApps;
         }
 
-        private async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
+        private static async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
         {
             var processInfo = new ProcessStartInfo("cmd.exe", "/c " + command)
             {
@@ -176,8 +184,8 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             if (process == null)
                 throw new InvalidOperationException("Failed to start process.");
 
-            var output = await process.StandardOutput.ReadToEndAsync();
-            var error = await process.StandardError.ReadToEndAsync();
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await process.StandardError.ReadToEndAsync(cancellationToken);
 
             await process.WaitForExitAsync(cancellationToken);
             if (!string.IsNullOrEmpty(error))
