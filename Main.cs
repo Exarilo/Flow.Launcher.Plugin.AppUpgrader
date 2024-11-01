@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -13,37 +14,52 @@ namespace Flow.Launcher.Plugin.AppUpgrader
     public class AppUpgrader : IAsyncPlugin
     {
         internal PluginInitContext Context;
-        private List<UpgradableApp> upgradableApps;
-
+        private ConcurrentBag<UpgradableApp> upgradableApps;
+        private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
+        private DateTime _lastRefreshTime = DateTime.MinValue;
+        private const int CACHE_EXPIRATION_MINUTES = 15;
+        private const int COMMAND_TIMEOUT_SECONDS = 10;
+        private static readonly Regex AppLineRegex = new Regex(@"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
+                                                        RegexOptions.Compiled | RegexOptions.IgnoreCase);
         public Task InitAsync(PluginInitContext context)
         {
             Context = context;
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await RefreshUpgradableAppsAsync();
+                }
+                catch (Exception ex) { }
+            });
+
+            ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
             return Task.CompletedTask;
         }
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
         {
-            var results = new List<Result>();
-            try
+            if (ShouldRefreshCache())
             {
-                upgradableApps = GetUpgradableAppsAsync().GetAwaiter().GetResult();
+                await RefreshUpgradableAppsAsync();
             }
-            catch (Exception ex)
-            {
-                return results;
-            }
-
-            await Task.Yield();
-            string keyword = query.FirstSearch.Trim().ToLower();
 
             if (upgradableApps == null || !upgradableApps.Any())
             {
-                return results;
+                return new List<Result>
+                {
+                    new Result
+                    {
+                        Title = "No updates available",
+                        SubTitle = "All applications are up-to-date.",
+                        IcoPath = "Images\\app.png"
+                    }
+                };
             }
 
-            foreach (var app in upgradableApps.ToList())
-            {
-                results.Add(new Result
+            return upgradableApps.AsParallel()
+                .WithDegreeOfParallelism(Environment.ProcessorCount)
+                .Select(app => new Result
                 {
                     Title = $"Upgrade {app.Name}",
                     SubTitle = $"From {app.Version} to {app.AvailableVersion}",
@@ -55,29 +71,60 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             {
                                 await PerformUpgradeAsync(app);
                             }
-                            catch (Exception ex){}
-                        }, token);
+                            catch (Exception ex)
+                            {
+                                Context.API.ShowMsg($"Upgrade failed: {ex.Message}");
+                            }
+                        });
                         return true;
                     },
                     IcoPath = "Images\\app.png"
-                });
-            }
-
-            return results;
+                }).ToList();
         }
 
+
+        private bool ShouldRefreshCache()
+        {
+            return upgradableApps == null ||
+                   DateTime.Now - _lastRefreshTime > TimeSpan.FromMinutes(CACHE_EXPIRATION_MINUTES);
+        }
+
+        private async Task RefreshUpgradableAppsAsync()
+        {
+            if (!ShouldRefreshCache())
+                return;
+
+            await _refreshSemaphore.WaitAsync();
+            try
+            {
+                if (!ShouldRefreshCache())
+                    return;
+
+                var apps = await GetUpgradableAppsAsync();
+                upgradableApps = new ConcurrentBag<UpgradableApp>(apps);
+                _lastRefreshTime = DateTime.Now;
+            }
+            catch (Exception ex) { }
+            finally
+            {
+                _refreshSemaphore.Release();
+            }
+        }
 
 
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
-            Context.API.ShowMsg($"Attempting to update {app.Name}...");
+            Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
             await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} -i");
-            upgradableApps = await GetUpgradableAppsAsync();
+            upgradableApps = new ConcurrentBag<UpgradableApp>(upgradableApps.Where(a => a.Id != app.Id));
+            await RefreshUpgradableAppsAsync();
         }
+
 
         private async Task<List<UpgradableApp>> GetUpgradableAppsAsync()
         {
-            var output = await ExecuteWingetCommandAsync("winget upgrade");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(COMMAND_TIMEOUT_SECONDS));
+            var output = await ExecuteWingetCommandAsync("winget upgrade", cts.Token);
             return ParseWingetOutput(output);
         }
 
@@ -86,17 +133,15 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             var upgradableApps = new List<UpgradableApp>();
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-            // Find the header line
-            int startIndex = Array.FindIndex(lines, line => Regex.IsMatch(line, @"^-+$"));
+            var startIndex = Array.FindIndex(lines, line => Regex.IsMatch(line, @"^-+$"));
             if (startIndex == -1) return upgradableApps;
 
-            // Analyze each line after the header line, ignoring the last line (which is the number of upgrade available)
             for (int i = startIndex + 1; i < lines.Length - 1; i++)
             {
                 var line = lines[i].Trim();
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
-                var match = Regex.Match(line, @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$");
+                var match = AppLineRegex.Match(line);
                 if (match.Success)
                 {
                     var app = new UpgradableApp
@@ -114,11 +159,10 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     }
                 }
             }
-
             return upgradableApps;
         }
 
-        private async Task<string> ExecuteWingetCommandAsync(string command)
+        private async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
         {
             var processInfo = new ProcessStartInfo("cmd.exe", "/c " + command)
             {
@@ -128,22 +172,20 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 CreateNoWindow = true
             };
 
-            var output = new StringBuilder();
+            using var process = Process.Start(processInfo);
+            if (process == null)
+                throw new InvalidOperationException("Failed to start process.");
 
-            using (var process = new Process())
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync(cancellationToken);
+            if (!string.IsNullOrEmpty(error))
             {
-                process.StartInfo = processInfo;
-
-                process.OutputDataReceived += (sender, e) => { if (e.Data != null) output.AppendLine(e.Data); };
-                process.ErrorDataReceived += (sender, e) => { if (e.Data != null) output.AppendLine(e.Data); };
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                await Task.Run(() => process.WaitForExit());
+                throw new InvalidOperationException(error);
             }
 
-            return output.ToString();
+            return output;
         }
     }
 
