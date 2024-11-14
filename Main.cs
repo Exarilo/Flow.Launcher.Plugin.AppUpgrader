@@ -65,8 +65,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 };
             }
 
+            string filterTerm = query.Search?.Trim().ToLower();
+
             return upgradableApps.AsParallel()
                 .WithDegreeOfParallelism(Environment.ProcessorCount)
+                .Where(app => string.IsNullOrEmpty(filterTerm) ||
+                             app.Name.ToLower().Contains(filterTerm))
                 .Select(app => new Result
                 {
                     Title = $"Upgrade {app.Name}",
@@ -87,7 +91,8 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                         return true;
                     },
                     IcoPath = "Images\\app.png"
-                }).ToList();
+                })
+                .ToList();
         }
 
 
