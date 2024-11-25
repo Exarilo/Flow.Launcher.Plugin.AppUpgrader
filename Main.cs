@@ -2,12 +2,14 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Flow.Launcher.Plugin;
+using Microsoft.Win32;
 
 namespace Flow.Launcher.Plugin.AppUpgrader
 {
@@ -15,6 +17,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
     {
         internal PluginInitContext Context;
         private ConcurrentBag<UpgradableApp> upgradableApps;
+        private ConcurrentDictionary<string, string> appIconPaths;
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
         private const int CACHE_EXPIRATION_MINUTES = 15;
@@ -22,23 +25,26 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private static readonly Regex AppLineRegex = new Regex(
             @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase,
-            TimeSpan.FromMilliseconds(500) 
+            TimeSpan.FromMilliseconds(500)
         );
         private static readonly Regex DashLineRegex = new Regex(
             @"^-+$",
             RegexOptions.Compiled,
-            TimeSpan.FromMilliseconds(500) 
+            TimeSpan.FromMilliseconds(500)
         );
+
         public Task InitAsync(PluginInitContext context)
         {
             Context = context;
+            appIconPaths = new ConcurrentDictionary<string, string>();
+
             Task.Run(async () =>
             {
                 try
                 {
                     await RefreshUpgradableAppsAsync();
                 }
-                catch (Exception ex) { }
+                catch (Exception ex){}
             });
 
             ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
@@ -67,14 +73,15 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             string filterTerm = query.Search?.Trim().ToLower();
 
-            return upgradableApps.AsParallel()
+            var tasks = upgradableApps.AsParallel()
                 .WithDegreeOfParallelism(Environment.ProcessorCount)
                 .Where(app => string.IsNullOrEmpty(filterTerm) ||
                              app.Name.ToLower().Contains(filterTerm))
-                .Select(app => new Result
+                .Select(async app => new Result
                 {
                     Title = $"Upgrade {app.Name}",
                     SubTitle = $"From {app.Version} to {app.AvailableVersion}",
+                    IcoPath = await GetAppIconPath(app.Id, app.Name),
                     Action = context =>
                     {
                         Task.Run(async () =>
@@ -89,12 +96,155 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             }
                         });
                         return true;
-                    },
-                    IcoPath = "Images\\app.png"
-                })
-                .ToList();
+                    }
+                });
+
+            return (await Task.WhenAll(tasks)).ToList();
         }
 
+        private async Task<string> GetAppIconPath(string appId, string appName)
+        {
+            if (appIconPaths.TryGetValue(appId, out string cachedPath))
+            {
+                return cachedPath;
+            }
+
+            try
+            {
+                var cleanAppName = new string(appName.TakeWhile(c => c != ' ').ToArray()).ToLowerInvariant();
+                var possibleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            cleanAppName,
+            appName.ToLowerInvariant(),
+            appId.ToLowerInvariant()
+        };
+
+                if (appName.Contains(" "))
+                {
+                    possibleNames.Add(appName.Replace(" ", "").ToLowerInvariant());
+                    possibleNames.Add(string.Join(".", appName.Split(' ')).ToLowerInvariant());
+                }
+
+                var searchPaths = new List<string>
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
+            @"C:\Program Files\WindowsApps"
+        };
+
+                foreach (var basePath in searchPaths)
+                {
+                    if (!Directory.Exists(basePath)) continue;
+
+                    var directories = await Task.Run(() => Directory.GetDirectories(basePath, "*", SearchOption.TopDirectoryOnly));
+                    var possibleDirs = directories.Where(dir => possibleNames.Any(name =>
+                        Path.GetFileName(dir).Contains(name, StringComparison.OrdinalIgnoreCase)));
+
+                    foreach (var dir in possibleDirs)
+                    {
+                        var iconFiles = new List<string>();
+                        try
+                        {
+                            await Task.Run(() =>
+                            {
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.exe", SearchOption.AllDirectories));
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.ico", SearchOption.AllDirectories));
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.lnk", SearchOption.AllDirectories));
+                            });
+                        }
+                        catch (UnauthorizedAccessException) { continue; }
+
+                        foreach (var file in iconFiles)
+                        {
+                            var fileName = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
+                            if (possibleNames.Any(name => fileName.Contains(name)))
+                            {
+                                appIconPaths.TryAdd(appId, file);
+                                return file;
+                            }
+                        }
+                    }
+                }
+                var registryResult = await Task.Run(() =>
+                {
+                    var registryPaths = new[]
+                    {
+                        $@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{cleanAppName}.exe",
+                        $@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{appId}",
+                        $@"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{appId}",
+                        $@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{cleanAppName}",
+                        $@"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{cleanAppName}"
+                    };
+
+                    foreach (var regPath in registryPaths)
+                    {
+                        using (var key = Registry.LocalMachine.OpenSubKey(regPath))
+                        using (var userKey = Registry.CurrentUser.OpenSubKey(regPath))
+                        {
+                            foreach (var regKey in new[] { key, userKey })
+                            {
+                                if (regKey == null) continue;
+
+                                var paths = new[]
+                                {
+                            regKey.GetValue("DisplayIcon") as string,
+                            regKey.GetValue("InstallLocation") as string,
+                            regKey.GetValue(null) as string
+                        };
+
+                                foreach (var path in paths.Where(p => !string.IsNullOrEmpty(p)))
+                                {
+                                    if (File.Exists(path))
+                                    {
+                                        return path;
+                                    }
+                                    if (Directory.Exists(path))
+                                    {
+                                        var iconInDir = Directory.GetFiles(path, "*.exe")
+                                            .Concat(Directory.GetFiles(path, "*.ico"))
+                                            .FirstOrDefault(f => possibleNames.Any(name =>
+                                                Path.GetFileNameWithoutExtension(f).Contains(name, StringComparison.OrdinalIgnoreCase)));
+
+                                        if (iconInDir != null)
+                                        {
+                                            return iconInDir;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return null;
+                });
+
+                if (registryResult != null)
+                {
+                    appIconPaths.TryAdd(appId, registryResult);
+                    return registryResult;
+                }
+
+                var startMenuPath = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu);
+                var shortcutFiles = await Task.Run(() =>
+                    Directory.GetFiles(startMenuPath, "*.lnk", SearchOption.AllDirectories)
+                        .Where(f => possibleNames.Any(name =>
+                            Path.GetFileNameWithoutExtension(f).Contains(name, StringComparison.OrdinalIgnoreCase)))
+                        .ToList());
+
+                if (shortcutFiles.Any())
+                {
+                    var result = shortcutFiles.First();
+                    appIconPaths.TryAdd(appId, result);
+                    return result;
+                }
+            }
+            catch (Exception ex){}
+
+            return "Images\\app.png";
+        }
 
         private bool ShouldRefreshCache()
         {
@@ -115,24 +265,28 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
                 var apps = await GetUpgradableAppsAsync();
                 upgradableApps = new ConcurrentBag<UpgradableApp>(apps);
-                _lastRefreshTime = DateTime.Now;
+                _lastRefreshTime = DateTime.UtcNow;
             }
-            catch (Exception ex) { }
+            catch (Exception ex){}
             finally
             {
                 _refreshSemaphore.Release();
             }
         }
 
-
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
             await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} -i");
-            upgradableApps = new ConcurrentBag<UpgradableApp>(upgradableApps.Where(a => a.Id != app.Id));
+
+             if (upgradableApps != null)
+            {
+                var updatedApps = upgradableApps.Where(a => a.Id != app.Id).ToList();
+                upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
+            }
+
             await RefreshUpgradableAppsAsync();
         }
-
 
         private async Task<List<UpgradableApp>> GetUpgradableAppsAsync()
         {
@@ -149,7 +303,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             var startIndex = Array.FindIndex(lines, line => DashLineRegex.IsMatch(line));
             if (startIndex == -1) return upgradableApps;
 
-            for (int i = startIndex + 1; i < lines.Length - 1; i++)
+            for (int i = startIndex + 1; i < lines.Length; i++)
             {
                 var line = lines[i].Trim();
                 if (string.IsNullOrWhiteSpace(line)) continue;
