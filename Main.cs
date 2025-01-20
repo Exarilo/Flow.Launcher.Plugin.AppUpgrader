@@ -17,7 +17,8 @@ namespace Flow.Launcher.Plugin.AppUpgrader
     {
         private SettingsPage settingsPage;
         internal PluginInitContext Context;
-        private ConcurrentBag<UpgradableApp> upgradableApps;
+        private ConcurrentBag<UpgradableApp> allUpgradableApps; 
+        private ConcurrentBag<UpgradableApp> upgradableApps;     
         private ConcurrentDictionary<string, string> appIconPaths;
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
@@ -44,7 +45,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 settingsPage = new SettingsPage(Context);
                 settingsPage.SettingLoaded += async (s, e) =>
                 {
-                    settingsPage.ExcludedApps.CollectionChanged += ExcludedApps_CollectionChanged;
+                    settingsPage.ExcludedApps.CollectionChanged += (s,e)=> ApplyExclusionFilter();
                     RemoveExcludedAppsFromUpgradableList();
                 };
             });
@@ -331,25 +332,48 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 if (!ShouldRefreshCache())
                     return;
 
-                var apps = await GetUpgradableAppsAsync(); 
-                upgradableApps = new ConcurrentBag<UpgradableApp>(apps); 
-                RemoveExcludedAppsFromUpgradableList(); 
-
-                _lastRefreshTime = DateTime.UtcNow; 
+                var apps = await GetUpgradableAppsAsync();
+                allUpgradableApps = new ConcurrentBag<UpgradableApp>(apps);
+                ApplyExclusionFilter();
+                _lastRefreshTime = DateTime.UtcNow;
             }
-            catch (Exception ex){}
             finally
             {
-                _refreshSemaphore.Release(); 
+                _refreshSemaphore.Release();
             }
         }
+        private void ApplyExclusionFilter()
+        {
+            var excludedApps = settingsPage.ExcludedApps;
+
+            if (excludedApps == null || !excludedApps.Any())
+            {
+                upgradableApps = new ConcurrentBag<UpgradableApp>(allUpgradableApps);
+                return;
+            }
+
+            var filteredApps = allUpgradableApps
+                .Where(app => !excludedApps.Any(excludedApp =>
+                    app.Name.Contains(excludedApp, StringComparison.OrdinalIgnoreCase) ||
+                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            upgradableApps = new ConcurrentBag<UpgradableApp>(filteredApps);
+        }
+
 
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
             await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} -i");
 
-             if (upgradableApps != null)
+            if (allUpgradableApps != null)
+            {
+                var updatedAllApps = allUpgradableApps.Where(a => a.Id != app.Id).ToList();
+                allUpgradableApps = new ConcurrentBag<UpgradableApp>(updatedAllApps);
+            }
+
+            if (upgradableApps != null)
             {
                 var updatedApps = upgradableApps.Where(a => a.Id != app.Id).ToList();
                 upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
