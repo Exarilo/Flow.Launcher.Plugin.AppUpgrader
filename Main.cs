@@ -4,17 +4,18 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Flow.Launcher.Plugin;
 using Microsoft.Win32;
-
+using System.Windows.Controls;
+using System.Windows;
 namespace Flow.Launcher.Plugin.AppUpgrader
 {
-    public class AppUpgrader : IAsyncPlugin
+    public class AppUpgrader : IAsyncPlugin, ISettingProvider
     {
+        private SettingsPage settingsPage;
         internal PluginInitContext Context;
         private ConcurrentBag<UpgradableApp> upgradableApps;
         private ConcurrentDictionary<string, string> appIconPaths;
@@ -33,11 +34,20 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             TimeSpan.FromMilliseconds(500)
         );
 
-        public Task InitAsync(PluginInitContext context)
+        public async Task InitAsync(PluginInitContext context)
         {
             Context = context;
             appIconPaths = new ConcurrentDictionary<string, string>();
 
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                settingsPage = new SettingsPage(Context);
+                settingsPage.SettingLoaded += async (s, e) =>
+                {
+                    settingsPage.ExcludedApps.CollectionChanged += ExcludedApps_CollectionChanged;
+                    RemoveExcludedAppsFromUpgradableList();
+                };
+            });
             Task.Run(async () =>
             {
                 try
@@ -48,7 +58,36 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             });
 
             ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
-            return Task.CompletedTask;
+            await Task.CompletedTask;
+        }
+
+
+        private void RemoveExcludedAppsFromUpgradableList()
+        {
+            var excludedApps = settingsPage.ExcludedApps;
+
+            if (excludedApps == null || !excludedApps.Any())
+            {
+                return;
+            }
+
+            var updatedApps = upgradableApps
+                .Where(app => !excludedApps.Any(excludedApp =>
+                    app.Name.Contains(excludedApp, StringComparison.OrdinalIgnoreCase) ||
+                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase))) 
+                .ToList();
+
+            upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
+        }
+
+        private void ExcludedApps_CollectionChanged(object sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add ||
+                e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                RemoveExcludedAppsFromUpgradableList();
+            }
         }
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
@@ -61,18 +100,44 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             if (upgradableApps == null || !upgradableApps.Any())
             {
                 return new List<Result>
-                {
-                    new Result
-                    {
-                        Title = "No updates available",
-                        SubTitle = "All applications are up-to-date.",
-                        IcoPath = "Images\\app.png"
-                    }
-                };
+        {
+            new Result
+            {
+                Title = "No updates available",
+                SubTitle = "All applications are up-to-date.",
+                IcoPath = "Images\\app.png"
+            }
+        };
             }
 
             string filterTerm = query.Search?.Trim().ToLower();
 
+            var results = new List<Result>();
+
+            if (settingsPage.EnableUpgradeAll)
+            {
+                results.Add(new Result
+                {
+                    Title = "Upgrade All Applications",
+                    SubTitle = "Upgrade all apps listed below.",
+                    IcoPath = "Images\\app.png",
+                    Action = context =>
+                    {
+                        Task.Run(async () =>
+                        {
+                            try
+                            {
+                                foreach (var app in upgradableApps)
+                                {
+                                    await PerformUpgradeAsync(app);
+                                }
+                            }
+                            catch (Exception ex){}
+                        });
+                        return true;
+                    }
+                });
+            }
             var tasks = upgradableApps.AsParallel()
                 .WithDegreeOfParallelism(Environment.ProcessorCount)
                 .Where(app => string.IsNullOrEmpty(filterTerm) ||
@@ -99,8 +164,11 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     }
                 });
 
-            return (await Task.WhenAll(tasks)).ToList();
+            results.AddRange(await Task.WhenAll(tasks));
+
+            return results;
         }
+
 
         private async Task<string> GetAppIconPath(string appId, string appName)
         {
@@ -263,14 +331,16 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 if (!ShouldRefreshCache())
                     return;
 
-                var apps = await GetUpgradableAppsAsync();
-                upgradableApps = new ConcurrentBag<UpgradableApp>(apps);
-                _lastRefreshTime = DateTime.UtcNow;
+                var apps = await GetUpgradableAppsAsync(); 
+                upgradableApps = new ConcurrentBag<UpgradableApp>(apps); 
+                RemoveExcludedAppsFromUpgradableList(); 
+
+                _lastRefreshTime = DateTime.UtcNow; 
             }
             catch (Exception ex){}
             finally
             {
-                _refreshSemaphore.Release();
+                _refreshSemaphore.Release(); 
             }
         }
 
@@ -286,6 +356,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             }
 
             await RefreshUpgradableAppsAsync();
+        }
+
+        public Control CreateSettingPanel()
+        {
+
+            return settingsPage;
         }
 
         private async Task<List<UpgradableApp>> GetUpgradableAppsAsync()

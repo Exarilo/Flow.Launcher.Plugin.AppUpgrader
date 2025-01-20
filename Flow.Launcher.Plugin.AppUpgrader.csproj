@@ -37,4 +37,7 @@
   <ItemGroup>
     <PackageReference Include="Flow.Launcher.Plugin" Version="4.1.0" />
   </ItemGroup>
+  <ItemGroup>
+    <Page Include="SettingsPage.xaml" />
+  </ItemGroup>
 </Project>
