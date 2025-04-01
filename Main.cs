@@ -67,7 +67,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         {
             var excludedApps = settingsPage.ExcludedApps;
 
-            if (excludedApps == null || !excludedApps.Any())
+            if (upgradableApps == null || excludedApps == null || !excludedApps.Any())
             {
                 return;
             }
