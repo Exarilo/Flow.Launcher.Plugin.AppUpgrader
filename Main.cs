@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,8 +18,8 @@ namespace Flow.Launcher.Plugin.AppUpgrader
     {
         private SettingsPage settingsPage;
         internal PluginInitContext Context;
-        private ConcurrentBag<UpgradableApp> allUpgradableApps; 
-        private ConcurrentBag<UpgradableApp> upgradableApps;     
+        private ConcurrentBag<UpgradableApp> allUpgradableApps;
+        private ConcurrentBag<UpgradableApp> upgradableApps;
         private ConcurrentDictionary<string, string> appIconPaths;
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
@@ -45,7 +46,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 settingsPage = new SettingsPage(Context);
                 settingsPage.SettingLoaded += async (s, e) =>
                 {
-                    settingsPage.ExcludedApps.CollectionChanged += (s,e)=> ApplyExclusionFilter();
+                    settingsPage.ExcludedApps.CollectionChanged += (s, e) => ApplyExclusionFilter();
                     RemoveExcludedAppsFromUpgradableList();
                 };
             });
@@ -55,7 +56,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 {
                     await RefreshUpgradableAppsAsync();
                 }
-                catch (Exception ex){}
+                catch (Exception ex) { }
             });
 
             ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
@@ -75,7 +76,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             var updatedApps = upgradableApps
                 .Where(app => !excludedApps.Any(excludedApp =>
                     app.Name.Contains(excludedApp, StringComparison.OrdinalIgnoreCase) ||
-                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase))) 
+                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
             upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
@@ -133,7 +134,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                                     await PerformUpgradeAsync(app);
                                 }
                             }
-                            catch (Exception ex){}
+                            catch (Exception ex) { }
                         });
                         return true;
                     }
@@ -310,7 +311,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     return result;
                 }
             }
-            catch (Exception ex){}
+            catch (Exception ex) { }
 
             return "Images\\app.png";
         }
@@ -436,7 +437,9 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
             };
 
             using var process = Process.Start(processInfo);
