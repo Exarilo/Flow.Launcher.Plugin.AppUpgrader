@@ -26,7 +26,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private const int CACHE_EXPIRATION_MINUTES = 15;
         private const int COMMAND_TIMEOUT_SECONDS = 10;
         private static readonly Regex AppLineRegex = new Regex(
-            @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$",
+            @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase,
             TimeSpan.FromMilliseconds(500)
         );
@@ -402,32 +402,90 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
             var startIndex = Array.FindIndex(lines, line => DashLineRegex.IsMatch(line));
-            if (startIndex == -1) return upgradableApps;
+            if (startIndex == -1 || startIndex == 0) return upgradableApps;
+
+            string headerLine = lines[startIndex - 1];
+            int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
+            int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
+            int availableStart = headerLine.IndexOf("Available", StringComparison.OrdinalIgnoreCase);
+            if (availableStart == -1)
+                availableStart = headerLine.IndexOf("New", StringComparison.OrdinalIgnoreCase);
+            int sourceStart = headerLine.IndexOf("Source", StringComparison.OrdinalIgnoreCase);
+
+            // Make sure we have valid start indices. If headers are completely different or missing,
+            // fallback to regex parsing.
+            bool useIndexParsing = idStart != -1 && versionStart != -1 && availableStart != -1;
 
             for (int i = startIndex + 1; i < lines.Length; i++)
             {
-                var line = lines[i].Trim();
+                var line = lines[i];
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
-                var match = AppLineRegex.Match(line);
-                if (match.Success)
-                {
-                    var app = new UpgradableApp
-                    {
-                        Name = match.Groups[1].Value.Trim(),
-                        Id = match.Groups[2].Value,
-                        Version = match.Groups[3].Value,
-                        AvailableVersion = match.Groups[4].Value,
-                        Source = match.Groups[5].Value
-                    };
+                UpgradableApp app = null;
 
-                    if (app.Id.Contains('.') || app.Id.Contains('-'))
+                if (useIndexParsing)
+                {
+                    try
                     {
-                        upgradableApps.Add(app);
+                        string name = SafeSubstring(line, 0, idStart).Trim();
+                        string id = SafeSubstring(line, idStart, versionStart - idStart).Trim();
+                        string version = SafeSubstring(line, versionStart, availableStart - versionStart).Trim();
+                        string available = sourceStart != -1 
+                            ? SafeSubstring(line, availableStart, sourceStart - availableStart).Trim()
+                            : SafeSubstring(line, availableStart).Trim();
+                        string source = sourceStart != -1 
+                            ? SafeSubstring(line, sourceStart).Trim() 
+                            : string.Empty;
+
+                        if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(id))
+                        {
+                            app = new UpgradableApp
+                            {
+                                Name = name,
+                                Id = id,
+                                Version = version,
+                                AvailableVersion = available,
+                                Source = source
+                            };
+                        }
                     }
+                    catch
+                    {
+                        app = null;
+                    }
+                }
+
+                // Fallback to Regex if index parsing failed or was disabled
+                if (app == null)
+                {
+                    var match = AppLineRegex.Match(line.Trim());
+                    if (match.Success)
+                    {
+                        app = new UpgradableApp
+                        {
+                            Name = match.Groups[1].Value.Trim(),
+                            Id = match.Groups[2].Value,
+                            Version = match.Groups[3].Value,
+                            AvailableVersion = match.Groups[4].Value,
+                            Source = match.Groups.Count > 5 ? match.Groups[5].Value : string.Empty
+                        };
+                    }
+                }
+
+                if (app != null && (app.Id.Contains('.') || app.Id.Contains('-')))
+                {
+                    upgradableApps.Add(app);
                 }
             }
             return upgradableApps;
+        }
+
+        private static string SafeSubstring(string text, int start, int length = -1)
+        {
+            if (start >= text.Length) return string.Empty;
+            if (length == -1) return text.Substring(start);
+            if (start + length > text.Length) return text.Substring(start);
+            return text.Substring(start, length);
         }
 
         private static async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
