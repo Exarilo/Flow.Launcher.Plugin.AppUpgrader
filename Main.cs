@@ -183,11 +183,11 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             {
                 var cleanAppName = new string(appName.TakeWhile(c => c != ' ').ToArray()).ToLowerInvariant();
                 var possibleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            cleanAppName,
-            appName.ToLowerInvariant(),
-            appId.ToLowerInvariant()
-        };
+                {
+                    cleanAppName,
+                    appName.ToLowerInvariant(),
+                    appId.ToLowerInvariant()
+                };
 
                 if (appName.Contains(" "))
                 {
@@ -195,50 +195,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     possibleNames.Add(string.Join(".", appName.Split(' ')).ToLowerInvariant());
                 }
 
-                var searchPaths = new List<string>
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
-            @"C:\Program Files\WindowsApps"
-        };
-
-                foreach (var basePath in searchPaths)
-                {
-                    if (!Directory.Exists(basePath)) continue;
-
-                    var directories = await Task.Run(() => Directory.GetDirectories(basePath, "*", SearchOption.TopDirectoryOnly));
-                    var possibleDirs = directories.Where(dir => possibleNames.Any(name =>
-                        Path.GetFileName(dir).Contains(name, StringComparison.OrdinalIgnoreCase)));
-
-                    foreach (var dir in possibleDirs)
-                    {
-                        var iconFiles = new List<string>();
-                        try
-                        {
-                            await Task.Run(() =>
-                            {
-                                iconFiles.AddRange(Directory.GetFiles(dir, "*.exe", SearchOption.AllDirectories));
-                                iconFiles.AddRange(Directory.GetFiles(dir, "*.ico", SearchOption.AllDirectories));
-                                iconFiles.AddRange(Directory.GetFiles(dir, "*.lnk", SearchOption.AllDirectories));
-                            });
-                        }
-                        catch (UnauthorizedAccessException) { continue; }
-
-                        foreach (var file in iconFiles)
-                        {
-                            var fileName = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
-                            if (possibleNames.Any(name => fileName.Contains(name)))
-                            {
-                                appIconPaths.TryAdd(appId, file);
-                                return file;
-                            }
-                        }
-                    }
-                }
+                // 1. Try Registry Uninstall paths (very fast & precise)
                 var registryResult = await Task.Run(() =>
                 {
                     var registryPaths = new[]
@@ -261,28 +218,38 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
                                 var paths = new[]
                                 {
-                            regKey.GetValue("DisplayIcon") as string,
-                            regKey.GetValue("InstallLocation") as string,
-                            regKey.GetValue(null) as string
-                        };
+                                    regKey.GetValue("DisplayIcon") as string,
+                                    regKey.GetValue("InstallLocation") as string,
+                                    regKey.GetValue(null) as string
+                                };
 
                                 foreach (var path in paths.Where(p => !string.IsNullOrEmpty(p)))
                                 {
-                                    if (File.Exists(path))
+                                    var cleanedPath = path.Trim('\"', ' ');
+                                    if (cleanedPath.Contains(","))
                                     {
-                                        return path;
+                                        cleanedPath = cleanedPath.Split(',')[0].Trim();
                                     }
-                                    if (Directory.Exists(path))
-                                    {
-                                        var iconInDir = Directory.GetFiles(path, "*.exe")
-                                            .Concat(Directory.GetFiles(path, "*.ico"))
-                                            .FirstOrDefault(f => possibleNames.Any(name =>
-                                                Path.GetFileNameWithoutExtension(f).Contains(name, StringComparison.OrdinalIgnoreCase)));
 
-                                        if (iconInDir != null)
+                                    if (File.Exists(cleanedPath))
+                                    {
+                                        return cleanedPath;
+                                    }
+                                    if (Directory.Exists(cleanedPath))
+                                    {
+                                        try
                                         {
-                                            return iconInDir;
+                                            var iconInDir = Directory.GetFiles(cleanedPath, "*.exe")
+                                                .Concat(Directory.GetFiles(cleanedPath, "*.ico"))
+                                                .FirstOrDefault(f => possibleNames.Any(name =>
+                                                    Path.GetFileNameWithoutExtension(f).Contains(name, StringComparison.OrdinalIgnoreCase)));
+
+                                            if (iconInDir != null)
+                                            {
+                                                return iconInDir;
+                                            }
                                         }
+                                        catch {}
                                     }
                                 }
                             }
@@ -297,12 +264,27 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     return registryResult;
                 }
 
+                // 2. Try Start Menu shortcuts (shallow structure)
                 var startMenuPath = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu);
+                var userStartMenuPath = Environment.GetFolderPath(Environment.SpecialFolder.StartMenu);
                 var shortcutFiles = await Task.Run(() =>
-                    Directory.GetFiles(startMenuPath, "*.lnk", SearchOption.AllDirectories)
-                        .Where(f => possibleNames.Any(name =>
+                {
+                    var files = new List<string>();
+                    foreach (var smp in new[] { startMenuPath, userStartMenuPath })
+                    {
+                        if (Directory.Exists(smp))
+                        {
+                            try
+                            {
+                                files.AddRange(Directory.GetFiles(smp, "*.lnk", SearchOption.AllDirectories));
+                            }
+                            catch {}
+                        }
+                    }
+                    return files.Where(f => possibleNames.Any(name =>
                             Path.GetFileNameWithoutExtension(f).Contains(name, StringComparison.OrdinalIgnoreCase)))
-                        .ToList());
+                        .ToList();
+                });
 
                 if (shortcutFiles.Any())
                 {
@@ -310,8 +292,69 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     appIconPaths.TryAdd(appId, result);
                     return result;
                 }
+
+                // 3. Last Resort: Directory check with limited depth (no heavy recursion)
+                var searchPaths = new List<string>
+                {
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+                };
+
+                foreach (var basePath in searchPaths)
+                {
+                    if (!Directory.Exists(basePath)) continue;
+
+                    var directories = await Task.Run(() => 
+                    {
+                        try
+                        {
+                            return Directory.GetDirectories(basePath, "*", SearchOption.TopDirectoryOnly);
+                        }
+                        catch { return Array.Empty<string>(); }
+                    });
+
+                    var possibleDirs = directories.Where(dir => possibleNames.Any(name =>
+                        Path.GetFileName(dir).Contains(name, StringComparison.OrdinalIgnoreCase)));
+
+                    foreach (var dir in possibleDirs)
+                    {
+                        var iconFiles = new List<string>();
+                        try
+                        {
+                            await Task.Run(() =>
+                            {
+                                // Only scan top level files, avoid deep AllDirectories recursion
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.exe", SearchOption.TopDirectoryOnly));
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.ico", SearchOption.TopDirectoryOnly));
+                                iconFiles.AddRange(Directory.GetFiles(dir, "*.lnk", SearchOption.TopDirectoryOnly));
+                                
+                                // Scan 1 level deep
+                                foreach (var subDir in Directory.GetDirectories(dir))
+                                {
+                                    iconFiles.AddRange(Directory.GetFiles(subDir, "*.exe", SearchOption.TopDirectoryOnly));
+                                    iconFiles.AddRange(Directory.GetFiles(subDir, "*.ico", SearchOption.TopDirectoryOnly));
+                                }
+                            });
+                        }
+                        catch {}
+
+                        foreach (var file in iconFiles)
+                        {
+                            var fileName = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
+                            if (possibleNames.Any(name => fileName.Contains(name)))
+                            {
+                                appIconPaths.TryAdd(appId, file);
+                                return file;
+                            }
+                        }
+                    }
+                }
             }
-            catch (Exception ex) { }
+            catch (Exception) { }
 
             return "Images\\app.png";
         }
