@@ -3,6 +3,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Collections.ObjectModel;
+using System.Threading.Tasks;
 using Flow.Launcher.Plugin;
 
 namespace Flow.Launcher.Plugin.AppUpgrader
@@ -24,6 +25,19 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     _settings.EnableUpgradeAll = value;
                     _context.API.SaveSettingJsonStorage<Settings>();
                     EnableUpgradeAllChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        public bool SyncWithWingetPins
+        {
+            get => _settings.SyncWithWingetPins;
+            set
+            {
+                if (_settings.SyncWithWingetPins != value)
+                {
+                    _settings.SyncWithWingetPins = value;
+                    _context.API.SaveSettingJsonStorage<Settings>();
                 }
             }
         }
@@ -62,6 +76,21 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             {
                 ExcludedApps.Add(appIdOrName);
                 ExcludeAppTextBox.Clear();
+
+                if (SyncWithWingetPins)
+                {
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await AppUpgrader.ExecuteWingetCommandInternalAsync($"winget pin add --id {appIdOrName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _context.API.ShowMsg($"Failed to pin app in winget: {ex.Message}");
+                        }
+                    });
+                }
             }
         }
 
@@ -70,6 +99,21 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             if (sender is Button button && button.Tag is string appIdOrName)
             {
                 ExcludedApps.Remove(appIdOrName);
+
+                if (SyncWithWingetPins)
+                {
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await AppUpgrader.ExecuteWingetCommandInternalAsync($"winget pin remove --id {appIdOrName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _context.API.ShowMsg($"Failed to unpin app in winget: {ex.Message}");
+                        }
+                    });
+                }
             }
         }
     }

@@ -15,6 +15,12 @@
                     Margin="0,3"
                     FontSize="12"
                     IsChecked="{Binding EnableUpgradeAll}" />
+            <CheckBox
+                    x:Name="SyncWithWingetPinsCheckbox"
+                    Content="Pin excluded apps to winget (sync settings exclusions with winget pins)"
+                    Margin="0,3"
+                    FontSize="12"
+                    IsChecked="{Binding SyncWithWingetPins}" />
 
         </StackPanel>
 

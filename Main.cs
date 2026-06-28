@@ -21,6 +21,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         internal PluginInitContext Context;
         private ConcurrentBag<UpgradableApp> allUpgradableApps;
         private ConcurrentBag<UpgradableApp> upgradableApps;
+        private List<string> wingetPinnedAppIds = new List<string>();
         private ConcurrentDictionary<string, string> appIconPaths;
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
@@ -407,6 +408,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 if (!force && !ShouldRefreshCache())
                     return;
 
+                wingetPinnedAppIds = await GetPinnedAppIdsAsync();
                 var apps = await GetUpgradableAppsAsync();
                 allUpgradableApps = new ConcurrentBag<UpgradableApp>(apps);
                 ApplyExclusionFilter();
@@ -424,21 +426,66 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 return;
             }
 
-            var excludedApps = settings.ExcludedApps;
+            var excludedApps = settings.ExcludedApps ?? new List<string>();
+            var combinedExclusions = new HashSet<string>(excludedApps, StringComparer.OrdinalIgnoreCase);
+            if (wingetPinnedAppIds != null)
+            {
+                foreach (var id in wingetPinnedAppIds)
+                {
+                    combinedExclusions.Add(id);
+                }
+            }
 
-            if (excludedApps == null || !excludedApps.Any())
+            if (combinedExclusions.Count == 0)
             {
                 upgradableApps = new ConcurrentBag<UpgradableApp>(allUpgradableApps);
                 return;
             }
 
             var filteredApps = allUpgradableApps
-                .Where(app => !excludedApps.Any(excludedApp =>
-                    app.Name.Contains(excludedApp, StringComparison.OrdinalIgnoreCase) ||
-                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase)))
+                .Where(app => !combinedExclusions.Any(excluded =>
+                    app.Name.Contains(excluded, StringComparison.OrdinalIgnoreCase) ||
+                    app.Id.Contains(excluded, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
 
             upgradableApps = new ConcurrentBag<UpgradableApp>(filteredApps);
+        }
+
+        private async Task<List<string>> GetPinnedAppIdsAsync()
+        {
+            var pinnedIds = new List<string>();
+            try
+            {
+                var output = await ExecuteWingetCommandInternalAsync("winget pin list");
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+                var startIndex = Array.FindIndex(lines, line => DashLineRegex.IsMatch(line));
+                if (startIndex == -1 || startIndex == 0) return pinnedIds;
+
+                string headerLine = lines[startIndex - 1];
+                int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
+                int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
+
+                if (idStart != -1 && versionStart != -1)
+                {
+                    for (int i = startIndex + 1; i < lines.Length; i++)
+                    {
+                        var line = lines[i];
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+
+                        string id = SafeSubstring(line, idStart, versionStart - idStart).Trim();
+                        if (!string.IsNullOrEmpty(id) && (id.Contains('.') || id.Contains('-')))
+                        {
+                            pinnedIds.Add(id);
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Return whatever we have or empty list if no pins
+            }
+            return pinnedIds;
         }
 
 
@@ -447,7 +494,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
             try
             {
-                await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} --silent --accept-source-agreements --accept-package-agreements");
+                await ExecuteWingetCommandInternalAsync($"winget upgrade --id {app.Id} --silent --accept-source-agreements --accept-package-agreements");
                 Context.API.ShowMsg($"{app.Name} upgraded successfully!");
             }
             catch (Exception ex)
@@ -479,7 +526,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private async Task<List<UpgradableApp>> GetUpgradableAppsAsync()
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(COMMAND_TIMEOUT_SECONDS));
-            var output = await ExecuteWingetCommandAsync("winget upgrade", cts.Token);
+            var output = await ExecuteWingetCommandInternalAsync("winget upgrade", cts.Token);
             return ParseWingetOutput(output);
         }
 
@@ -612,7 +659,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             }
         }
 
-        private static async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
+        internal static async Task<string> ExecuteWingetCommandInternalAsync(string command, CancellationToken cancellationToken = default)
         {
             string exePath = GetWingetPath();
             string arguments = command.StartsWith("winget ", StringComparison.OrdinalIgnoreCase)
