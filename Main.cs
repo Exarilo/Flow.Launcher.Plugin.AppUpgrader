@@ -419,6 +419,11 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         }
         private void ApplyExclusionFilter()
         {
+            if (allUpgradableApps == null)
+            {
+                return;
+            }
+
             var excludedApps = settings.ExcludedApps;
 
             if (excludedApps == null || !excludedApps.Any())
