@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net7.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <AssemblyName>Flow.Launcher.Plugin.AppUpgrader</AssemblyName>
     <PackageId>Flow.Launcher.Plugin.AppUpgrader</PackageId>
     <Authors>Exarilo</Authors>
@@ -35,7 +35,7 @@
     </Content>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Flow.Launcher.Plugin" Version="4.1.0" />
+    <PackageReference Include="Flow.Launcher.Plugin" Version="4.3.0" />
   </ItemGroup>
   <ItemGroup>
     <Page Include="SettingsPage.xaml" />
