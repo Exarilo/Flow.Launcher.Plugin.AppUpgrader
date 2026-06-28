@@ -25,7 +25,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
         private const int CACHE_EXPIRATION_MINUTES = 15;
-        private const int COMMAND_TIMEOUT_SECONDS = 10;
+        private const int COMMAND_TIMEOUT_SECONDS = 30;
         private static readonly Regex AppLineRegex = new Regex(
             @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase,
@@ -503,9 +503,25 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             return text.Substring(start, length);
         }
 
+        private static string GetWingetPath()
+        {
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var wingetPath = Path.Combine(localAppData, "Microsoft", "WindowsApps", "winget.exe");
+            if (File.Exists(wingetPath))
+            {
+                return wingetPath;
+            }
+            return "winget.exe";
+        }
+
         private static async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
         {
-            var processInfo = new ProcessStartInfo("cmd.exe", "/c " + command)
+            string exePath = GetWingetPath();
+            string arguments = command.StartsWith("winget ", StringComparison.OrdinalIgnoreCase)
+                ? command.Substring(7)
+                : command;
+
+            var processInfo = new ProcessStartInfo(exePath, arguments)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -517,18 +533,21 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             using var process = Process.Start(processInfo);
             if (process == null)
-                throw new InvalidOperationException("Failed to start process.");
+                throw new InvalidOperationException("Failed to start winget process.");
 
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
+            await Task.WhenAll(outputTask, errorTask);
             await process.WaitForExitAsync(cancellationToken);
-            if (!string.IsNullOrEmpty(error))
+
+            var error = errorTask.Result;
+            if (process.ExitCode != 0 && !string.IsNullOrEmpty(error))
             {
-                throw new InvalidOperationException(error);
+                throw new InvalidOperationException($"winget exited with code {process.ExitCode}: {error}");
             }
 
-            return output;
+            return outputTask.Result;
         }
     }
 
