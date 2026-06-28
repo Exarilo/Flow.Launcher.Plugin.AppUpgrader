@@ -66,6 +66,67 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
         {
+            if (!IsWingetInstalled())
+            {
+                return new List<Result>
+                {
+                    new Result
+                    {
+                        Title = "Windows Package Manager (winget) is not installed",
+                        SubTitle = "Click here to open the Microsoft page for installing winget.",
+                        IcoPath = "Images\\app.png",
+                        Action = context =>
+                        {
+                            try
+                            {
+                                Process.Start(new ProcessStartInfo("https://learn.microsoft.com/windows/package-manager/winget/") { UseShellExecute = true });
+                            }
+                            catch (Exception ex)
+                            {
+                                Context.API.ShowMsg($"Failed to open browser: {ex.Message}");
+                            }
+                            return true;
+                        }
+                    }
+                };
+            }
+
+            string filterTerm = query.Search?.Trim().ToLower();
+
+            if (filterTerm == "refresh" || filterTerm == "r")
+            {
+                return new List<Result>
+                {
+                    new Result
+                    {
+                        Title = "Force check for updates",
+                        SubTitle = "Clears cache and queries winget for any new available updates.",
+                        IcoPath = "Images\\app.png",
+                        Action = context =>
+                        {
+                            Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    _lastRefreshTime = DateTime.MinValue;
+                                    upgradableApps = null;
+                                    allUpgradableApps = null;
+                                    Context.API.ShowMsg("Checking for application updates... Please wait.");
+                                    await RefreshUpgradableAppsAsync(force: true);
+                                    Context.API.ShowMsg("Application updates list refreshed successfully!");
+                                    Context.API.ChangeQuery(Context.CurrentPluginMetadata.ActionKeyword + " ", true);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Context.API.ShowMsg($"Failed to refresh updates: {ex.Message}");
+                                }
+                            });
+                            return true;
+                        }
+                    }
+                };
+            }
+
             if (ShouldRefreshCache())
             {
                 await RefreshUpgradableAppsAsync();
@@ -74,17 +135,15 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             if (upgradableApps == null || !upgradableApps.Any())
             {
                 return new List<Result>
-        {
-            new Result
-            {
-                Title = "No updates available",
-                SubTitle = "All applications are up-to-date.",
-                IcoPath = "Images\\app.png"
+                {
+                    new Result
+                    {
+                        Title = "No updates available",
+                        SubTitle = "All applications are up-to-date.",
+                        IcoPath = "Images\\app.png"
+                    }
+                };
             }
-        };
-            }
-
-            string filterTerm = query.Search?.Trim().ToLower();
 
             var results = new List<Result>();
 
@@ -337,15 +396,15 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                    DateTime.UtcNow - _lastRefreshTime > TimeSpan.FromMinutes(CACHE_EXPIRATION_MINUTES);
         }
 
-        private async Task RefreshUpgradableAppsAsync()
+        private async Task RefreshUpgradableAppsAsync(bool force = false)
         {
-            if (!ShouldRefreshCache())
+            if (!force && !ShouldRefreshCache())
                 return;
 
             await _refreshSemaphore.WaitAsync();
             try
             {
-                if (!ShouldRefreshCache())
+                if (!force && !ShouldRefreshCache())
                     return;
 
                 var apps = await GetUpgradableAppsAsync();
@@ -381,7 +440,15 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
-            await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} --silent --accept-source-agreements --accept-package-agreements");
+            try
+            {
+                await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} --silent --accept-source-agreements --accept-package-agreements");
+                Context.API.ShowMsg($"{app.Name} upgraded successfully!");
+            }
+            catch (Exception ex)
+            {
+                Context.API.ShowMsg($"Failed to upgrade {app.Name}: {ex.Message}");
+            }
 
             if (allUpgradableApps != null)
             {
@@ -395,7 +462,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
             }
 
-            await RefreshUpgradableAppsAsync();
+            await RefreshUpgradableAppsAsync(force: true);
         }
 
         public Control CreateSettingPanel()
@@ -512,6 +579,32 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 return wingetPath;
             }
             return "winget.exe";
+        }
+
+        private static bool IsWingetInstalled()
+        {
+            string path = GetWingetPath();
+            if (path != "winget.exe")
+            {
+                return File.Exists(path);
+            }
+
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo("winget.exe", "--version")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                });
+                process.WaitForExit(1000);
+                return process.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static async Task<string> ExecuteWingetCommandAsync(string command, CancellationToken cancellationToken = default)
