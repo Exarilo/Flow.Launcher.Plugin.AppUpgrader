@@ -17,6 +17,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
     public class AppUpgrader : IAsyncPlugin, ISettingProvider
     {
         private SettingsPage settingsPage;
+        private Settings settings;
         internal PluginInitContext Context;
         private ConcurrentBag<UpgradableApp> allUpgradableApps;
         private ConcurrentBag<UpgradableApp> upgradableApps;
@@ -40,16 +41,16 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         {
             Context = context;
             appIconPaths = new ConcurrentDictionary<string, string>();
+            settings = Context.API.LoadSettingJsonStorage<Settings>();
 
             Application.Current.Dispatcher.Invoke(() =>
             {
-                settingsPage = new SettingsPage(Context);
-                settingsPage.SettingLoaded += async (s, e) =>
-                {
-                    settingsPage.ExcludedApps.CollectionChanged += (s, e) => ApplyExclusionFilter();
-                    RemoveExcludedAppsFromUpgradableList();
-                };
+                settingsPage = new SettingsPage(Context, settings);
+                settingsPage.ExcludedApps.CollectionChanged += (s, e) => ApplyExclusionFilter();
             });
+
+            ApplyExclusionFilter();
+
             Task.Run(async () =>
             {
                 try
@@ -61,35 +62,6 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
             await Task.CompletedTask;
-        }
-
-
-        private void RemoveExcludedAppsFromUpgradableList()
-        {
-            var excludedApps = settingsPage.ExcludedApps;
-
-            if (upgradableApps == null || excludedApps == null || !excludedApps.Any())
-            {
-                return;
-            }
-
-            var updatedApps = upgradableApps
-                .Where(app => !excludedApps.Any(excludedApp =>
-                    app.Name.Contains(excludedApp, StringComparison.OrdinalIgnoreCase) ||
-                    app.Id.Contains(excludedApp, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-
-            upgradableApps = new ConcurrentBag<UpgradableApp>(updatedApps);
-        }
-
-        private void ExcludedApps_CollectionChanged(object sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
-        {
-
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add ||
-                e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
-            {
-                RemoveExcludedAppsFromUpgradableList();
-            }
         }
 
         public async Task<List<Result>> QueryAsync(Query query, CancellationToken token)
@@ -116,7 +88,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             var results = new List<Result>();
 
-            if (settingsPage.EnableUpgradeAll)
+            if (settings.EnableUpgradeAll)
             {
                 results.Add(new Result
                 {
@@ -388,7 +360,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         }
         private void ApplyExclusionFilter()
         {
-            var excludedApps = settingsPage.ExcludedApps;
+            var excludedApps = settings.ExcludedApps;
 
             if (excludedApps == null || !excludedApps.Any())
             {
