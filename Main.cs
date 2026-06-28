@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -366,7 +366,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
-            await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} -i");
+            await ExecuteWingetCommandAsync($"winget upgrade --id {app.Id} --silent --accept-source-agreements --accept-package-agreements");
 
             if (allUpgradableApps != null)
             {
