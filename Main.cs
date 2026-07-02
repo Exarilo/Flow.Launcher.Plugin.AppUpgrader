@@ -148,12 +148,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             var results = new List<Result>();
 
-            if (settings.EnableUpgradeAll)
+            if (settings.EnableUpgradeAll && string.IsNullOrEmpty(filterTerm))
             {
                 results.Add(new Result
                 {
                     Title = "Upgrade All Applications",
-                    SubTitle = "Upgrade all apps listed below.",
+                    SubTitle = $"Upgrade all {upgradableApps.Count} applications listed below.",
                     IcoPath = "Images\\app.png",
                     Action = context =>
                     {
