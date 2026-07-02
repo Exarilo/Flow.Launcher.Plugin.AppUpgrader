@@ -535,82 +535,90 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             var upgradableApps = new List<UpgradableApp>();
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-            var startIndex = Array.FindIndex(lines, line => DashLineRegex.IsMatch(line));
-            if (startIndex == -1 || startIndex == 0) return upgradableApps;
-
-            string headerLine = lines[startIndex - 1];
-            int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
-            int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
-            int availableStart = headerLine.IndexOf("Available", StringComparison.OrdinalIgnoreCase);
-            if (availableStart == -1)
-                availableStart = headerLine.IndexOf("New", StringComparison.OrdinalIgnoreCase);
-            int sourceStart = headerLine.IndexOf("Source", StringComparison.OrdinalIgnoreCase);
-
-            // Make sure we have valid start indices. If headers are completely different or missing,
-            // fallback to regex parsing.
-            bool useIndexParsing = idStart != -1 && versionStart != -1 && availableStart != -1;
-
-            for (int i = startIndex + 1; i < lines.Length; i++)
+            for (int i = 0; i < lines.Length; i++)
             {
                 var line = lines[i];
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                UpgradableApp app = null;
-
-                if (useIndexParsing)
+                if (DashLineRegex.IsMatch(line))
                 {
-                    try
-                    {
-                        string name = SafeSubstring(line, 0, idStart).Trim();
-                        string id = SafeSubstring(line, idStart, versionStart - idStart).Trim();
-                        string version = SafeSubstring(line, versionStart, availableStart - versionStart).Trim();
-                        string available = sourceStart != -1 
-                            ? SafeSubstring(line, availableStart, sourceStart - availableStart).Trim()
-                            : SafeSubstring(line, availableStart).Trim();
-                        string source = sourceStart != -1 
-                            ? SafeSubstring(line, sourceStart).Trim() 
-                            : string.Empty;
+                    if (i == 0) continue;
+                    string headerLine = lines[i - 1];
 
-                        if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(id))
+                    int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
+                    int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
+                    int availableStart = headerLine.IndexOf("Available", StringComparison.OrdinalIgnoreCase);
+                    if (availableStart == -1)
+                        availableStart = headerLine.IndexOf("New", StringComparison.OrdinalIgnoreCase);
+                    int sourceStart = headerLine.IndexOf("Source", StringComparison.OrdinalIgnoreCase);
+
+                    bool useIndexParsing = idStart != -1 && versionStart != -1 && availableStart != -1;
+                    if (!useIndexParsing) continue;
+
+                    int j = i + 1;
+                    while (j < lines.Length)
+                    {
+                        var rowLine = lines[j];
+
+                        // Stop parsing this table if we hit another separator or a new section header
+                        if (DashLineRegex.IsMatch(rowLine) || 
+                            rowLine.Contains("Version", StringComparison.OrdinalIgnoreCase) || 
+                            rowLine.Contains("Available", StringComparison.OrdinalIgnoreCase))
                         {
-                            app = new UpgradableApp
-                            {
-                                Name = name,
-                                Id = id,
-                                Version = version,
-                                AvailableVersion = available,
-                                Source = source
-                            };
+                            break;
                         }
-                    }
-                    catch
-                    {
-                        app = null;
-                    }
-                }
 
-                // Fallback to Regex if index parsing failed or was disabled
-                if (app == null)
-                {
-                    var match = AppLineRegex.Match(line.Trim());
-                    if (match.Success)
-                    {
-                        app = new UpgradableApp
+                        try
                         {
-                            Name = match.Groups[1].Value.Trim(),
-                            Id = match.Groups[2].Value,
-                            Version = match.Groups[3].Value,
-                            AvailableVersion = match.Groups[4].Value,
-                            Source = match.Groups.Count > 5 ? match.Groups[5].Value : string.Empty
-                        };
-                    }
-                }
+                            string name = SafeSubstring(rowLine, 0, idStart).Trim();
+                            string id = SafeSubstring(rowLine, idStart, versionStart - idStart).Trim();
+                            string version = SafeSubstring(rowLine, versionStart, availableStart - versionStart).Trim();
+                            string available = sourceStart != -1 
+                                ? SafeSubstring(rowLine, availableStart, sourceStart - availableStart).Trim()
+                                : SafeSubstring(rowLine, availableStart).Trim();
+                            string source = sourceStart != -1 
+                                ? SafeSubstring(rowLine, sourceStart).Trim() 
+                                : string.Empty;
 
-                if (app != null && (app.Id.Contains('.') || app.Id.Contains('-')))
-                {
-                    upgradableApps.Add(app);
+                            // Validate that we parsed a real app row:
+                            // 1. ID, version, available must not be empty
+                            // 2. ID, version, available must not contain spaces
+                            // 3. ID must contain at least a dot or a dash and contain alphanumeric characters
+                            if (!string.IsNullOrEmpty(id) && 
+                                !id.Contains(' ') && 
+                                (id.Contains('.') || id.Contains('-')) && 
+                                id.Any(char.IsLetterOrDigit) &&
+                                !string.IsNullOrEmpty(version) && 
+                                !version.Contains(' ') &&
+                                !string.IsNullOrEmpty(available) &&
+                                !available.Contains(' '))
+                            {
+                                var app = new UpgradableApp
+                                {
+                                    Name = name,
+                                    Id = id,
+                                    Version = version,
+                                    AvailableVersion = available,
+                                    Source = source
+                                };
+
+                                if (!upgradableApps.Any(x => x.Id.Equals(app.Id, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    upgradableApps.Add(app);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Skip malformed rows
+                        }
+
+                        j++;
+                    }
+
+                    // Move outer loop index to where we finished parsing this table
+                    i = j - 1;
                 }
             }
+
             return upgradableApps;
         }
 
