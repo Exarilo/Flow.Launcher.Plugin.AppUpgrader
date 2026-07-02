@@ -88,6 +88,24 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             }
                             return true;
                         }
+                    },
+                    new Result
+                    {
+                        Title = "Install winget automatically (asheroto/winget-install)",
+                        SubTitle = "Click here to open the winget-install GitHub repository.",
+                        IcoPath = "Images\\app.png",
+                        Action = context =>
+                        {
+                            try
+                            {
+                                Process.Start(new ProcessStartInfo("https://github.com/asheroto/winget-install") { UseShellExecute = true });
+                            }
+                            catch (Exception ex)
+                            {
+                                Context.API.ShowMsg($"Failed to open browser: {ex.Message}");
+                            }
+                            return true;
+                        }
                     }
                 };
             }
