@@ -42,6 +42,19 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             }
         }
 
+        public int CacheExpirationMinutes
+        {
+            get => _settings.CacheExpirationMinutes;
+            set
+            {
+                if (_settings.CacheExpirationMinutes != value)
+                {
+                    _settings.CacheExpirationMinutes = value > 0 ? value : 1;
+                    _context.API.SaveSettingJsonStorage<Settings>();
+                }
+            }
+        }
+
         public ObservableCollection<string> ExcludedApps { get; } = new ObservableCollection<string>();
 
         public SettingsPage(PluginInitContext context, Settings settings)
@@ -115,6 +128,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     });
                 }
             }
+        }
+
+        private void NumberValidationTextBox(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            var regex = new System.Text.RegularExpressions.Regex("[^0-9]+");
+            e.Handled = regex.IsMatch(e.Text);
         }
     }
 }

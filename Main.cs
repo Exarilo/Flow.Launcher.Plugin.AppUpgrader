@@ -23,9 +23,9 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private ConcurrentBag<UpgradableApp> upgradableApps;
         private List<string> wingetPinnedAppIds = new List<string>();
         private ConcurrentDictionary<string, string> appIconPaths;
+        private readonly ConcurrentDictionary<string, byte> _activeUpgrades = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _refreshSemaphore = new SemaphoreSlim(1, 1);
         private DateTime _lastRefreshTime = DateTime.MinValue;
-        private const int CACHE_EXPIRATION_MINUTES = 15;
         private const int COMMAND_TIMEOUT_SECONDS = 30;
         private static readonly Regex AppLineRegex = new Regex(
             @"^(.+?)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$",
@@ -58,7 +58,10 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 {
                     await RefreshUpgradableAppsAsync();
                 }
-                catch (Exception ex) { }
+                catch (Exception ex)
+                {
+                    Context.API.LogException("AppUpgrader", "Failed background refresh of upgradable apps on plugin initialization", ex);
+                }
             });
 
             ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, Environment.ProcessorCount * 2);
@@ -412,7 +415,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
         private bool ShouldRefreshCache()
         {
             return upgradableApps == null ||
-                   DateTime.UtcNow - _lastRefreshTime > TimeSpan.FromMinutes(CACHE_EXPIRATION_MINUTES);
+                   DateTime.UtcNow - _lastRefreshTime > TimeSpan.FromMinutes(settings.CacheExpirationMinutes);
         }
 
         private async Task RefreshUpgradableAppsAsync(bool force = false)
@@ -499,9 +502,9 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Return whatever we have or empty list if no pins
+                Context.API.LogException("AppUpgrader", "Failed to retrieve pinned application IDs from winget", ex);
             }
             return pinnedIds;
         }
@@ -509,6 +512,12 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
         private async Task PerformUpgradeAsync(UpgradableApp app)
         {
+            if (!_activeUpgrades.TryAdd(app.Id, 0))
+            {
+                Context.API.ShowMsg($"{app.Name} is already upgrading in the background!");
+                return;
+            }
+
             Context.API.ShowMsg($"Preparing to update {app.Name}... This may take a moment.");
             try
             {
@@ -518,6 +527,11 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             catch (Exception ex)
             {
                 Context.API.ShowMsg($"Failed to upgrade {app.Name}: {ex.Message}");
+                Context.API.LogException("AppUpgrader", $"Failed to upgrade application {app.Name} (ID: {app.Id})", ex);
+            }
+            finally
+            {
+                _activeUpgrades.TryRemove(app.Id, out _);
             }
 
             if (allUpgradableApps != null)

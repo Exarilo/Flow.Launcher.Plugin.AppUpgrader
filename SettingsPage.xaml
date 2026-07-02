@@ -21,6 +21,13 @@
                     Margin="0,3"
                     FontSize="12"
                     IsChecked="{Binding SyncWithWingetPins}" />
+            <StackPanel Orientation="Horizontal" Margin="0,5">
+                <TextBlock Text="Cache Expiration (minutes):" VerticalAlignment="Center" FontSize="12" Margin="0,0,10,0"/>
+                <TextBox x:Name="CacheExpirationTextBox" Width="60" Height="22" 
+                         VerticalAlignment="Center" FontSize="12"
+                         Text="{Binding CacheExpirationMinutes, UpdateSourceTrigger=PropertyChanged}" 
+                         PreviewTextInput="NumberValidationTextBox"/>
+            </StackPanel>
 
         </StackPanel>
 
