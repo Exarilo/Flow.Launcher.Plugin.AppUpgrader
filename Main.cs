@@ -52,7 +52,7 @@ namespace Flow.Launcher.Plugin.AppUpgrader
 
             ApplyExclusionFilter();
 
-            Task.Run(async () =>
+            await Task.Run(async () =>
             {
                 try
                 {
@@ -484,21 +484,23 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                 if (startIndex == -1 || startIndex == 0) return pinnedIds;
 
                 string headerLine = lines[startIndex - 1];
-                int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
-                int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
+                var columns = GetColumnRanges(headerLine);
 
-                if (idStart != -1 && versionStart != -1)
+                if (columns.Count < 2) return pinnedIds;
+
+                int idStart = columns[0].Start;
+                int versionStart = columns[1].Start;
+
+                for (int i = startIndex + 1; i < lines.Length; i++)
                 {
-                    for (int i = startIndex + 1; i < lines.Length; i++)
-                    {
-                        var line = lines[i];
-                        if (string.IsNullOrWhiteSpace(line)) continue;
+                    var line = lines[i];
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (DashLineRegex.IsMatch(line)) break;
 
-                        string id = SafeSubstring(line, idStart, versionStart - idStart).Trim();
-                        if (!string.IsNullOrEmpty(id) && (id.Contains('.') || id.Contains('-')))
-                        {
-                            pinnedIds.Add(id);
-                        }
+                    string id = SafeSubstring(line, idStart, versionStart - idStart).Trim();
+                    if (!string.IsNullOrEmpty(id) && (id.Contains('.') || id.Contains('-')))
+                    {
+                        pinnedIds.Add(id);
                     }
                 }
             }
@@ -575,25 +577,21 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                     if (i == 0) continue;
                     string headerLine = lines[i - 1];
 
-                    int idStart = headerLine.IndexOf("Id", StringComparison.OrdinalIgnoreCase);
-                    int versionStart = headerLine.IndexOf("Version", StringComparison.OrdinalIgnoreCase);
-                    int availableStart = headerLine.IndexOf("Available", StringComparison.OrdinalIgnoreCase);
-                    if (availableStart == -1)
-                        availableStart = headerLine.IndexOf("New", StringComparison.OrdinalIgnoreCase);
-                    int sourceStart = headerLine.IndexOf("Source", StringComparison.OrdinalIgnoreCase);
+                    var columns = GetColumnRanges(headerLine);
 
-                    bool useIndexParsing = idStart != -1 && versionStart != -1 && availableStart != -1;
-                    if (!useIndexParsing) continue;
+                    // Name, Id, Version, Available
+                    if (columns.Count < 4) continue;
+
+                    int idStart = columns[1].Start;
+                    int versionStart = columns[2].Start;
+                    int availableStart = columns[3].Start;
+                    int sourceStart = columns.Count >= 5 ? columns[4].Start : -1;
 
                     int j = i + 1;
                     while (j < lines.Length)
                     {
                         var rowLine = lines[j];
-
-                        // Stop parsing this table if we hit another separator or a new section header
-                        if (DashLineRegex.IsMatch(rowLine) || 
-                            rowLine.Contains("Version", StringComparison.OrdinalIgnoreCase) || 
-                            rowLine.Contains("Available", StringComparison.OrdinalIgnoreCase))
+                        if (DashLineRegex.IsMatch(rowLine))
                         {
                             break;
                         }
@@ -603,22 +601,22 @@ namespace Flow.Launcher.Plugin.AppUpgrader
                             string name = SafeSubstring(rowLine, 0, idStart).Trim();
                             string id = SafeSubstring(rowLine, idStart, versionStart - idStart).Trim();
                             string version = SafeSubstring(rowLine, versionStart, availableStart - versionStart).Trim();
-                            string available = sourceStart != -1 
+                            string available = sourceStart != -1
                                 ? SafeSubstring(rowLine, availableStart, sourceStart - availableStart).Trim()
                                 : SafeSubstring(rowLine, availableStart).Trim();
-                            string source = sourceStart != -1 
-                                ? SafeSubstring(rowLine, sourceStart).Trim() 
+                            string source = sourceStart != -1
+                                ? SafeSubstring(rowLine, sourceStart).Trim()
                                 : string.Empty;
 
                             // Validate that we parsed a real app row:
                             // 1. ID, version, available must not be empty
                             // 2. ID, version, available must not contain spaces
                             // 3. ID must contain at least a dot or a dash and contain alphanumeric characters
-                            if (!string.IsNullOrEmpty(id) && 
-                                !id.Contains(' ') && 
-                                (id.Contains('.') || id.Contains('-')) && 
+                            if (!string.IsNullOrEmpty(id) &&
+                                !id.Contains(' ') &&
+                                (id.Contains('.') || id.Contains('-')) &&
                                 id.Any(char.IsLetterOrDigit) &&
-                                !string.IsNullOrEmpty(version) && 
+                                !string.IsNullOrEmpty(version) &&
                                 !version.Contains(' ') &&
                                 !string.IsNullOrEmpty(available) &&
                                 !available.Contains(' '))
@@ -733,6 +731,29 @@ namespace Flow.Launcher.Plugin.AppUpgrader
             }
 
             return outputTask.Result;
+        }
+        private static List<(int Start, int End)> GetColumnRanges(string headerLine)
+        {
+            var ranges = new List<(int Start, int End)>();
+            int i = 0;
+            int n = headerLine.Length;
+
+            while (i < n)
+            {
+                while (i < n && headerLine[i] == ' ') i++;
+                if (i >= n) break;
+
+                int start = i;
+                while (i < n)
+                {
+                    if (headerLine[i] == ' ' && i + 1 < n && headerLine[i + 1] == ' ')
+                        break;
+                    i++;
+                }
+                ranges.Add((start, i));
+            }
+
+            return ranges;
         }
     }
 
